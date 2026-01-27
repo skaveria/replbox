@@ -3,6 +3,10 @@
 (def frame-path
   "/home/arduino/ArduinoApps/ledmatrixtest/uno_matrix_frame.txt")
 
+;; Matrix geometry (from datasheet): 13 columns × 8 rows = 104 pixels.
+(def matrix-w 13)
+(def matrix-h 8)
+
 (def font
   "5x7 font. Each char is 5 columns. Bit 0 is the TOP pixel of the column."
   {\h [0x7F 0x08 0x08 0x08 0x7F]
@@ -27,77 +31,84 @@
                 (bit-and (long c) 0xFFFFFFFF)
                 (bit-and (long d) 0xFFFFFFFF))))
 
-(defn clear! []
+(defn clear!
+  []
   (set-frame! 0 0 0 0))
 
+(defn xy->idx
+  "Convert (x,y) into the matrix's linear pixel index.
+  x: 0..12 left→right
+  y: 0..7  top→bottom"
+  [x y]
+  (+ (* (long y) matrix-w) (long x)))
+
+(defn frame-from-on-indices
+  "Given pixel indices (0..103), return [w0 w1 w2 w3].
+
+  IMPORTANT: UnoQ matrix frames are packed MSB-first within each 32-bit word.
+  The last 8 pixels (indices 96..103) live in word3 bits 31..24."
+  [idxs]
+  (reduce
+    (fn [[w0 w1 w2 w3] i]
+      (let [i    (long i)
+            word (quot i 32)
+            k    (rem i 32)
+            bit  (bit-shift-left 1 (- 31 k))] ; MSB-first packing
+        (case word
+          0 [(bit-or w0 bit) w1 w2 w3]
+          1 [w0 (bit-or w1 bit) w2 w3]
+          2 [w0 w1 (bit-or w2 bit) w3]
+          3 [w0 w1 w2 (bit-or w3 bit)])))
+    [0 0 0 0]
+    idxs))
+
+(defn set-pixel!
+  "Set a single pixel, clearing everything else (useful for testing)."
+  [x y]
+  (let [[a b c d] (frame-from-on-indices [(xy->idx x y)])]
+    (set-frame! a b c d)))
+
+(defn show-row!
+  "Light an entire row y (0..7)."
+  [y]
+  (let [idxs (for [x (range matrix-w)] (xy->idx x y))
+        [a b c d] (frame-from-on-indices idxs)]
+    (set-frame! a b c d)))
+
+(defn show-col!
+  "Light an entire column x (0..12)."
+  [x]
+  (let [idxs (for [y (range matrix-h)] (xy->idx x y))
+        [a b c d] (frame-from-on-indices idxs)]
+    (set-frame! a b c d)))
+
 (defn- text-columns
-  "String -> seq of column bitmasks (5 cols per char + 1 blank spacer)."
+  "String -> seq of 5x7 column bitmasks (5 cols per char + 1 blank spacer)."
   [s]
   (mapcat (fn [ch]
             (concat (get font ch (get font \space)) [0]))
           s))
 
-(defn- rows->frame
-  "Pack 13 row-bytes (each 8 bits wide) into 4x32-bit words.
-  Row 0 is the BOTTOM row; increasing row index goes UP."
-  [rows]
-  (let [rows (take 13 (concat rows (repeat 0)))]
-    (reduce (fn [[w0 w1 w2 w3] [i row-byte]]
-              (let [rb (bit-and (long row-byte) 0xFF)
-                    word (quot i 4)
-                    shift (* (rem i 4) 8)
-                    v (bit-shift-left rb shift)]
-                (case word
-                  0 [(bit-or w0 v) w1 w2 w3]
-                  1 [w0 (bit-or w1 v) w2 w3]
-                  2 [w0 w1 (bit-or w2 v) w3]
-                  3 [w0 w1 w2 (bit-or w3 v)])))
-            [0 0 0 0]
-            (map-indexed vector rows))))
-
-(defn- window-rows
-  "Given full text as columns, produce 13 row-bytes for an 8x13 window
-  at horizontal offset x0.
-
-  Options:
-  - base-y: where the 7px-tall font sits within 13 rows (default 3 centers it)
-  - mirror-x?: if text is mirrored, set true
-  - flip-y?: if text is upside-down, set true"
-  ([cols x0] (window-rows cols x0 {:base-y 3 :mirror-x? false :flip-y? false}))
-  ([cols x0 {:keys [base-y mirror-x? flip-y?] :or {base-y 3 mirror-x? false flip-y? false}}]
-   (let [W 8
-         H 13
-         ;; pad so we can read past the end safely
-         cols (vec (concat cols (repeat W 0)))]
-     (mapv
-      (fn [row] ; row 0 = bottom
-        (let [y (if flip-y? (- (dec H) row) row)]
-          (reduce
-           (fn [acc x]
-             (let [xwin (if mirror-x? (- (dec W) x) x)
-                   col  (nth cols (+ x0 xwin) 0)
-                   ;; font bits: bit 0 = top of 7px glyph
-                   ;; map glyph y (0..6, top->bottom) into display rows (base-y..base-y+6).
-                   ;; display row index increases upward; row 0 is bottom.
-                   ;; so target display y = base-y + (6 - glyph-y)
-                   acc (if (and (<= base-y y (+ base-y 6)))
-                         (let [glyph-y (- 6 (- y base-y))
-                               on? (not (zero? (bit-and col (bit-shift-left 1 glyph-y))))]
-                           (if on? (bit-or acc (bit-shift-left 1 x)) acc))
-                         acc)]
-               acc))
-           0
-           (range W))))
-      (range H)))))
+(defn- window->frame
+  "Render a 13×8 window starting at horizontal offset x0 over the column stream."
+  [cols x0]
+  (let [cols (vec (concat cols (repeat matrix-w 0)))]
+    (let [idxs
+          (for [x (range matrix-w)
+                y (range 7) ; font is 7px tall
+                :let [col (nth cols (+ x0 x) 0)
+                      on? (not (zero? (bit-and col (bit-shift-left 1 y))))]
+                :when on?]
+            (xy->idx x y))]
+      (frame-from-on-indices idxs))))
 
 (defn scroll-text!
-  "Scroll text across the 8x13 matrix by writing frames to the bridge file."
+  "Scroll text left across the 13×8 matrix by writing frames to the bridge file."
   ([s] (scroll-text! s 90))
   ([s delay-ms]
-   (let [cols (concat (text-columns s) (repeat 8 0))
-         n (count cols)]
+   (let [cols (concat (text-columns s) (repeat matrix-w 0))
+         n    (count cols)]
      (doseq [x0 (range n)]
-       (let [rows (window-rows cols x0 {:base-y 3 :mirror-x? false :flip-y? false})
-             [a b c d] (rows->frame rows)]
+       (let [[a b c d] (window->frame cols x0)]
          (set-frame! a b c d)
          (Thread/sleep delay-ms))))))
