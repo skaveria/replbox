@@ -9,7 +9,7 @@
 
 ;; Physical orientation correction (set these once and forget about it)
 (def ^:private flip-x? false)
-(def ^:private flip-y? true)
+(def ^:private flip-y? false)
 (def font
   "5x7 ASCII font. Each char is 5 columns. Bit 0 is the TOP pixel of the column."
   {
