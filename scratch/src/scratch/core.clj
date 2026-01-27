@@ -244,3 +244,77 @@
    (let [cols (string->cols s)
          [a b c d] (cols->frame cols align yoff)]
      (set-frame! a b c d))))
+
+
+;; --- deps ---
+(require '[clojure.string :as str])
+(require '[clojure.java.shell :as sh])
+
+;; --- helpers to read load average safely ---
+(defonce ^:private cpu-cores
+  (delay
+    (let [{:keys [exit out err]} (sh/sh "nproc")]
+      (when-not (zero? exit)
+        (throw (ex-info "nproc failed" {:exit exit :err err})))
+      (max 1 (Long/parseLong (str/trim out))))))
+
+(defn- load1
+  "Return 1-minute load average as a double, using `uptime`."
+  []
+  (let [{:keys [exit out err]} (sh/sh "uptime")]
+    (when-not (zero? exit)
+      (throw (ex-info "uptime failed" {:exit exit :err err})))
+    ;; Handles both:
+    ;; - 'load average: 0.12, 0.08, 0.05'
+    ;; - 'load averages: 0.12 0.08 0.05'
+    (let [s (str/trim out)]
+      (if-let [[_ n] (re-find #"load averages?:\s*([0-9]+\.[0-9]+|[0-9]+)" s)]
+        (Double/parseDouble n)
+        (throw (ex-info "Could not parse load average from uptime" {:uptime s}))))))
+
+(defn- clamp01 [x] (max 0.0 (min 1.0 (double x))))
+
+(defn- load->height
+  "Map load average to a 0..7 height for the 8-row display."
+  [load]
+  (let [cores (double @cpu-cores)
+        frac  (clamp01 (/ load cores))
+        ;; Height 0..7
+        h (int (Math/round (* frac (dec matrix-h))))]
+    h))
+
+;; --- waveform state: 13 columns wide ---
+(defonce ^:private waveform-heights
+  (atom (vec (repeat matrix-w 0))))
+
+(defn- render-waveform!
+  "Draw the current waveform. Each column is a vertical bar up to its height."
+  [heights]
+  (let [idxs
+        (for [x (range matrix-w)
+              :let [h (nth heights x 0)]
+              y (range (inc h))] ; 0..h
+          ;; draw from bottom up
+          (xy->idx x (- (dec matrix-h) y)))
+        [a b c d] (frame-from-on-indices idxs)]
+    (set-frame! a b c d)))
+
+(defn cpu-waveform-step!
+  "Sample CPU load and advance the waveform by one column."
+  []
+  (let [h (load->height (load1))]
+    (swap! waveform-heights
+           (fn [v]
+             (-> (subvec v 1) (conj h) vec)))
+    (render-waveform! @waveform-heights)
+    h))
+
+(defn cpu-waveform-loop!
+  "Continuously update the CPU load waveform.
+  interval-ms: sampling interval (try 250–1000ms)."
+  ([] (cpu-waveform-loop! 500))
+  ([interval-ms]
+   (loop []
+     (cpu-waveform-step!)
+     (Thread/sleep interval-ms)
+     (recur))))
