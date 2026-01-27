@@ -8,7 +8,7 @@
 (def matrix-h 8)
 
 ;; Physical orientation correction (set these once and forget about it)
-(def ^:private flip-x? true)
+(def ^:private flip-x? false)
 (def ^:private flip-y? true)
 
 (def font
