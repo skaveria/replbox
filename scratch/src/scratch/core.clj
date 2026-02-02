@@ -318,3 +318,18 @@
      (cpu-waveform-step!)
      (Thread/sleep interval-ms)
      (recur))))
+
+
+
+(def seg-path "/home/arduino/ArduinoApps/ledmatrixtest/uno_7seg.txt")
+
+(defn seg-num!
+  "Show an integer on the 7-seg."
+  [n]
+  (spit seg-path (format "num %d\n" (long n))))
+
+(defn seg-fix!
+  "Show a 4-digit fixed-point value with decimal after dpAfter (0..3), or -1 for none.
+   Example: (seg-fix! 1234 1) => 12.34"
+  [value dp-after]
+  (spit seg-path (format "fix %d %d\n" (long value) (long dp-after))))
