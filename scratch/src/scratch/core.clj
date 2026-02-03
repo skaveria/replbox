@@ -386,3 +386,26 @@
   (let [cores (double @cpu-cores)
         frac  (max 0.0 (min 1.0 (/ (load1) cores)))]
     (int (Math/round (* frac (dec matrix-h))))))
+
+(require '[clojure.java.shell :as sh])
+
+(def ^:private xdg-runtime "/run/user/1000")
+
+(defn speak!
+  "Speak text via espeak-ng -> pw-cat, routed through PipeWire Bluetooth.
+  Requires an active GUI session to keep the bluez sink alive."
+  [text]
+  (sh/sh "bash" "-lc"
+         (str "XDG_RUNTIME_DIR=" xdg-runtime " "
+              "espeak-ng --stdout " (pr-str (str ". " text))
+              " | XDG_RUNTIME_DIR=" xdg-runtime " pw-cat --playback -")))
+
+(defn speak-warm!
+  [text]
+  (sh/sh "bash" "-lc"
+         (str "XDG_RUNTIME_DIR=" xdg-runtime " "
+              "pw-cat --playback /usr/share/sounds/alsa/Front_Center.wav >/dev/null 2>&1; "
+              "sleep 0.2; "
+              "XDG_RUNTIME_DIR=" xdg-runtime " "
+              "espeak-ng --stdout " (pr-str (str ". " text))
+              " | XDG_RUNTIME_DIR=" xdg-runtime " pw-cat --playback -")))
