@@ -1,19 +1,27 @@
-(ns scratch.core)
+(ns scratch.core
+  (:require
+    [clojure.string :as str])
+  (:import
+    [java.time LocalTime]
+    [java.lang Runtime]))
 
 (def frame-path
   "/home/arduino/ArduinoApps/ledmatrixtest/uno_matrix_frame.txt")
 
-;; Matrix geometry (from datasheet): 13 columns × 8 rows = 104 pixels.
+(def seg-path
+  "/home/arduino/ArduinoApps/ledmatrixtest/uno_7seg.txt")
+
+;; Matrix geometry: 13 columns × 8 rows
 (def matrix-w 13)
 (def matrix-h 8)
 
-;; Physical orientation correction (set these once and forget about it)
+;; Physical orientation correction (set once and forget)
 (def ^:private flip-x? false)
 (def ^:private flip-y? false)
+
 (def font
   "5x7 ASCII font. Each char is 5 columns. Bit 0 is the TOP pixel of the column."
-  {
-   \space [0 0 0 0 0]
+  {\space [0 0 0 0 0]
    \@ [62 65 93 89 78]
    \` [0 3 7 8 0]
    \! [0 0 95 0 0]
@@ -36,10 +44,10 @@
    \' [0 8 7 3 0]
    \G [62 65 65 81 115]
    \g [24 164 164 156 120]
-   \( [0 28 34 65 0]
-   \H [127 8 8 8 127]
-   \h [127 8 4 4 120]
-   \) [0 65 34 28 0]
+   $begin:math:text$ \[0 28 34 65 0\]
+   \\H \[127 8 8 8 127\]
+   \\h \[127 8 4 4 120\]
+   $end:math:text$ [0 65 34 28 0]
    \I [0 65 127 65 0]
    \i [0 68 125 64 0]
    \* [42 28 127 28 42]
@@ -94,19 +102,18 @@
    \Z [97 89 73 77 67]
    \z [68 100 84 76 68]
    \; [0 64 52 0 0]
-   \[ [0 127 65 65 65]
-   \{ [0 8 54 65 0]
-   \< [0 8 20 34 65]
-   \| [0 0 119 0 0]
-   \= [20 20 20 20 20]
-   \] [0 65 65 65 127]
+   $begin:math:display$ \[0 127 65 65 65\]
+   \\\{ \[0 8 54 65 0\]
+   \\\< \[0 8 20 34 65\]
+   \\\| \[0 0 119 0 0\]
+   \\\= \[20 20 20 20 20\]
+   $end:math:display$ [0 65 65 65 127]
    \} [0 65 54 8 0]
    \> [0 65 34 20 8]
    \^ [4 2 1 2 4]
    \~ [2 1 2 4 2]
    \? [2 1 89 9 6]
-   \_ [64 64 64 64 64]
-  })
+   \_ [64 64 64 64 64]})
 
 (defn set-frame!
   "Write 4x32-bit frame words to the bridge file."
@@ -123,11 +130,9 @@
   (set-frame! 0 0 0 0))
 
 (defn xy->idx
-  "Convert (x,y) into the matrix's linear pixel index.
-  x: 0..12 left→right
-  y: 0..7  top→bottom
-
-  flip-x?/flip-y? correct for physical mirroring on the UnoQ matrix."
+  "Convert (x,y) into linear pixel index.
+   x: 0..12 left→right
+   y: 0..7  top→bottom"
   [x y]
   (let [x (long x)
         y (long y)
@@ -137,16 +142,14 @@
 
 (defn frame-from-on-indices
   "Given pixel indices (0..103), return [w0 w1 w2 w3].
-
-  IMPORTANT: UnoQ matrix frames are packed MSB-first within each 32-bit word.
-  The last 8 pixels (indices 96..103) live in word3 bits 31..24."
+   Packed MSB-first within each 32-bit word."
   [idxs]
   (reduce
     (fn [[w0 w1 w2 w3] i]
       (let [i    (long i)
             word (quot i 32)
             k    (rem i 32)
-            bit  (bit-shift-left 1 (- 31 k))] ; MSB-first packing
+            bit  (bit-shift-left 1 (- 31 k))]
         (case word
           0 [(bit-or w0 bit) w1 w2 w3]
           1 [w0 (bit-or w1 bit) w2 w3]
@@ -156,28 +159,26 @@
     idxs))
 
 (defn set-pixel!
-  "Set a single pixel, clearing everything else (useful for testing)."
+  "Set a single pixel, clearing everything else."
   [x y]
   (let [[a b c d] (frame-from-on-indices [(xy->idx x y)])]
     (set-frame! a b c d)))
 
 (defn show-row!
-  "Light an entire row y (0..7)."
   [y]
   (let [idxs (for [x (range matrix-w)] (xy->idx x y))
         [a b c d] (frame-from-on-indices idxs)]
     (set-frame! a b c d)))
 
 (defn show-col!
-  "Light an entire column x (0..12)."
   [x]
   (let [idxs (for [y (range matrix-h)] (xy->idx x y))
         [a b c d] (frame-from-on-indices idxs)]
     (set-frame! a b c d)))
 
 (defn- text-columns
-  "String -> seq of 5x7 column bitmasks (5 cols per char + 1 blank spacer).
-  Normalizes to lowercase so \"I\" uses the \\i glyph unless you add \\I explicitly."
+  "String -> seq of 5x7 column bitmasks (5 cols per char + 1 spacer).
+   Normalizes to lowercase."
   [s]
   (mapcat (fn [ch]
             (let [ch (Character/toLowerCase ^char ch)]
@@ -189,7 +190,7 @@
   [cols x0]
   (let [cols (vec (concat cols (repeat matrix-w 0)))
         idxs (for [x (range matrix-w)
-                   y (range 7) ; font is 7px tall
+                   y (range 7)
                    :let [col (nth cols (+ x0 x) 0)
                          on? (not (zero? (bit-and col (bit-shift-left 1 y))))]
                    :when on?]
@@ -197,7 +198,6 @@
     (frame-from-on-indices idxs)))
 
 (defn scroll-text!
-  "Scroll text left across the 13×8 matrix by writing frames to the bridge file."
   ([s] (scroll-text! s 90))
   ([s delay-ms]
    (let [cols (concat (text-columns s) (repeat matrix-w 0))
@@ -207,15 +207,9 @@
          (set-frame! a b c d)
          (Thread/sleep delay-ms))))))
 
-(defn- string->cols
-  "Convert a string into a vector of column bitmasks (5 cols/char + 1 spacer)."
-  [s]
-  (vec (text-columns s)))
+(defn- string->cols [s] (vec (text-columns s)))
 
 (defn- cols->frame
-  "Render exactly one frame from a column vector, with optional alignment.
-  align: :left | :center | :right
-  yoff: vertical offset (0 or 1; font is 7 tall, matrix is 8)."
   ([cols] (cols->frame cols :left 1))
   ([cols align yoff]
    (let [W matrix-w
@@ -235,93 +229,15 @@
      (frame-from-on-indices idxs))))
 
 (defn show-text!
-  "Display a string as a single static frame (no scrolling).
-  Options:
-    align: :left (default) | :center | :right
-    yoff: 1 (default) to visually center 7px text in 8px height; 0 to pin to top."
   ([s] (show-text! s :left 1))
   ([s align yoff]
    (let [cols (string->cols s)
          [a b c d] (cols->frame cols align yoff)]
      (set-frame! a b c d))))
 
-
-;; --- deps ---
-(require '[clojure.string :as str])
-(require '[clojure.java.shell :as sh])
-
-;; --- helpers to read load average safely ---
-(defonce ^:private cpu-cores
-  (delay
-    (let [{:keys [exit out err]} (sh/sh "nproc")]
-      (when-not (zero? exit)
-        (throw (ex-info "nproc failed" {:exit exit :err err})))
-      (max 1 (Long/parseLong (str/trim out))))))
-
-(defn- load1
-  "Return 1-minute load average as a double, using `uptime`."
-  []
-  (let [{:keys [exit out err]} (sh/sh "uptime")]
-    (when-not (zero? exit)
-      (throw (ex-info "uptime failed" {:exit exit :err err})))
-    ;; Handles both:
-    ;; - 'load average: 0.12, 0.08, 0.05'
-    ;; - 'load averages: 0.12 0.08 0.05'
-    (let [s (str/trim out)]
-      (if-let [[_ n] (re-find #"load averages?:\s*([0-9]+\.[0-9]+|[0-9]+)" s)]
-        (Double/parseDouble n)
-        (throw (ex-info "Could not parse load average from uptime" {:uptime s}))))))
-
-(defn- clamp01 [x] (max 0.0 (min 1.0 (double x))))
-
-(defn- load->height
-  "Map load average to a 0..7 height for the 8-row display."
-  [load]
-  (let [cores (double @cpu-cores)
-        frac  (clamp01 (/ load cores))
-        ;; Height 0..7
-        h (int (Math/round (* frac (dec matrix-h))))]
-    h))
-
-;; --- waveform state: 13 columns wide ---
-(defonce ^:private waveform-heights
-  (atom (vec (repeat matrix-w 0))))
-
-(defn- render-waveform!
-  "Draw the current waveform. Each column is a vertical bar up to its height."
-  [heights]
-  (let [idxs
-        (for [x (range matrix-w)
-              :let [h (nth heights x 0)]
-              y (range (inc h))] ; 0..h
-          ;; draw from bottom up
-          (xy->idx x (- (dec matrix-h) y)))
-        [a b c d] (frame-from-on-indices idxs)]
-    (set-frame! a b c d)))
-
-(defn cpu-waveform-step!
-  "Sample CPU load and advance the waveform by one column."
-  []
-  (let [h (load->height (load1))]
-    (swap! waveform-heights
-           (fn [v]
-             (-> (subvec v 1) (conj h) vec)))
-    (render-waveform! @waveform-heights)
-    h))
-
-(defn cpu-waveform-loop!
-  "Continuously update the CPU load waveform.
-  interval-ms: sampling interval (try 250–1000ms)."
-  ([] (cpu-waveform-loop! 500))
-  ([interval-ms]
-   (loop []
-     (cpu-waveform-step!)
-     (Thread/sleep interval-ms)
-     (recur))))
-
-
-
-(def seg-path "/home/arduino/ArduinoApps/ledmatrixtest/uno_7seg.txt")
+;; --------------------------
+;; 7-seg helpers
+;; --------------------------
 
 (defn seg-num!
   "Show an integer on the 7-seg."
@@ -333,3 +249,150 @@
    Example: (seg-fix! 1234 1) => 12.34"
   [value dp-after]
   (spit seg-path (format "fix %d %d\n" (long value) (long dp-after))))
+
+(defn seg-bright!
+  "Set brightness 0..15."
+  [level]
+  (spit seg-path (format "bright %d\n" (long level))))
+
+;; --------------------------
+;; Wave animation (matrix)
+;; --------------------------
+
+(defn sprite->frame
+  "8 rows of 13 chars ('.' off, '#' on) -> [w0 w1 w2 w3]"
+  [rows]
+  (let [W 13 H 8]
+    (assert (= H (count rows)) "Need exactly 8 rows")
+    (doseq [r rows] (assert (= W (count r)) "Each row must be exactly 13 chars"))
+    (reduce
+      (fn [[w0 w1 w2 w3] [y x]]
+        (if (= \# (nth (nth rows y) x))
+          (let [i    (+ (* y W) x)
+                word (quot i 32)
+                k    (rem i 32)
+                bit  (bit-shift-left 1 (- 31 k))]
+            (case word
+              0 [(bit-or w0 bit) w1 w2 w3]
+              1 [w0 (bit-or w1 bit) w2 w3]
+              2 [w0 w1 (bit-or w2 bit) w3]
+              3 [w0 w1 w2 (bit-or w3 bit)]))
+          [w0 w1 w2 w3]))
+      [0 0 0 0]
+      (for [y (range H) x (range W)] [y x]))))
+
+(defn show-sprite!
+  [rows]
+  (let [[a b c d] (sprite->frame rows)]
+    (set-frame! a b c d)))
+
+(defn wave-frame
+  "Generate a single-pixel wave frame.
+   phase: integer
+   baseline: 0..7 (row index, 0=top)
+   amp: 0..3"
+  [phase baseline amp]
+  (let [shape [0 1 2 3 2 1 0 -1]]
+    (vec
+      (for [y (range matrix-h)]
+        (apply str
+               (for [x (range matrix-w)]
+                 (let [off (nth shape (mod (+ x phase) (count shape)))
+                       off (max (- amp) (min amp off))
+                       yy  (+ baseline off)]
+                   (if (= y yy) \# \.))))))))
+
+;; --------------------------
+;; Clock + Wave dashboard
+;; --------------------------
+
+(defonce ^:private dashboard-running? (atom false))
+(defonce ^:private dashboard-threads (atom {}))
+
+(defn show-time-dot!
+  "Show HH.MM on the 7-seg using dpAfter=1 (dot after second digit)."
+  []
+  (let [t (LocalTime/now)
+        hh (.getHour t)
+        mm (.getMinute t)
+        v (+ (* hh 100) mm)]
+    (spit seg-path (str "fix " v " 1\n"))))
+
+(defn start-clock!
+  "Start a background thread that updates the 7-seg once per second."
+  []
+  (swap! dashboard-threads
+         assoc
+         :clock
+         (doto
+           (Thread.
+            (fn []
+              (while @dashboard-running?
+                (try
+                  (show-time-dot!)
+                  (catch Exception _))
+                (Thread/sleep 1000))))
+           (.setName "uno-clock")
+           (.setDaemon true)
+           (.start)))
+  :ok)
+
+(defn start-wave!
+  "Start a background thread that animates the matrix wave."
+  ([] (start-wave! {:fps 12 :baseline 4 :amp 2}))
+  ([{:keys [fps baseline amp] :or {fps 12 baseline 4 amp 2}}]
+   (let [delay-ms (long (/ 1000 fps))]
+     (swap! dashboard-threads
+            assoc
+            :wave
+            (doto
+              (Thread.
+               (fn []
+                 (loop [phase 0]
+                   (when @dashboard-running?
+                     (try
+                       (show-sprite! (wave-frame phase baseline amp))
+                       (catch Exception _))
+                     (Thread/sleep delay-ms)
+                     (recur (inc phase))))))
+              (.setName "uno-wave")
+              (.setDaemon true)
+              (.start))))
+   :ok))
+
+(defn start-dashboard!
+  "Run wave + clock at the same time.
+   Example: (start-dashboard! {:fps 12 :baseline 4 :amp 2})"
+  ([] (start-dashboard! {:fps 12 :baseline 4 :amp 2}))
+  ([wave-opts]
+   (reset! dashboard-running? true)
+   (start-clock!)
+   (start-wave! wave-opts)
+   :ok))
+
+(defn stop-dashboard!
+  "Stop wave + clock threads."
+  []
+  (reset! dashboard-running? false)
+  :ok)
+
+;; --------------------------
+;; Optional CPU load helpers (no shelling out)
+;; --------------------------
+
+(defonce ^:private cpu-cores
+  (delay (max 1 (.availableProcessors (Runtime/getRuntime)))))
+
+(defn load1
+  "Return 1-minute load average as a double via /proc/loadavg."
+  []
+  (let [s (str/trim (slurp "/proc/loadavg"))
+        first-field (first (str/split s #"\s+"))]
+    (Double/parseDouble first-field)))
+
+(defn cpu-load->height
+  "Convert load1 to a 0..7 bar height."
+  []
+  (let [cores (double @cpu-cores)
+        frac  (max 0.0 (min 1.0 (/ (load1) cores)))]
+    (int (Math/round (* frac (dec matrix-h))))))
